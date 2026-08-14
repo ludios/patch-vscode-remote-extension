@@ -34,7 +34,7 @@ EXTENSION_ID        = "ms-vscode-remote.remote-ssh"
 INSTALLER_RELATIVE  = Path("out/install-script/scripts/linux-exec-server-installer.sh")
 OLD_LOG_LINE        = 'CLI_LOG_FILE="${VSCODE_AGENT_FOLDER}/.cli.${COMMIT_ID}.log"'
 NEW_LOG_LINE        = 'CLI_LOG_FILE="${VSCODE_AGENT_FOLDER}/.cli.${COMMIT_ID}.$$.log"'
-DISCOVERY_DIRS      = (".vscode/extensions", ".vscode-insiders/extensions", ".vscode-oss/extensions")
+DISCOVERY_RELATIVE_DIRS = (".vscode/extensions", ".vscode-insiders/extensions", ".vscode-oss/extensions")
 
 
 class PatchError(RuntimeError):
@@ -160,6 +160,53 @@ def newest_root(roots: Sequence[Path]) -> Path:
     return keyed[-1][1]
 
 
+def unique_paths(paths: Sequence[Path]) -> list[Path]:
+    """Deduplicate filesystem paths using the host platform's path semantics.
+
+    Args:
+        paths: Candidate filesystem paths, possibly containing aliases or duplicates.
+
+    Returns:
+        Paths in first-seen order with platform-equivalent duplicates removed.
+    """
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = os.path.normcase(os.path.abspath(os.fspath(path)))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def candidate_home_directories() -> list[Path]:
+    """Find plausible user-home directories for the current operating system.
+
+    Returns:
+        Candidate home directories, preferring native environment variables and
+        falling back to pathlib's home-directory resolution.
+    """
+    candidates: list[Path] = []
+    if os.name == "nt":
+        user_profile = os.environ.get("USERPROFILE")
+        home_drive   = os.environ.get("HOMEDRIVE")
+        home_path    = os.environ.get("HOMEPATH")
+        if user_profile:
+            candidates.append(Path(user_profile))
+        if home_drive and home_path:
+            candidates.append(Path(home_drive + home_path))
+    else:
+        home = os.environ.get("HOME")
+        if home:
+            candidates.append(Path(home))
+    try:
+        candidates.append(Path.home())
+    except RuntimeError:
+        pass
+    return unique_paths(candidates)
+
+
 def discover_root() -> Path:
     """Find the newest Remote-SSH installation in standard VS Code directories.
 
@@ -167,10 +214,11 @@ def discover_root() -> Path:
         Newest discovered extension root.
     """
     roots: list[Path] = []
-    for relative in DISCOVERY_DIRS:
-        directory = Path.home() / relative
-        if directory.is_dir():
-            roots.extend(roots_under(directory))
+    for home in candidate_home_directories():
+        for relative in DISCOVERY_RELATIVE_DIRS:
+            directory = home / relative
+            if directory.is_dir():
+                roots.extend(roots_under(directory))
     return newest_root(roots)
 
 
